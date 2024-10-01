@@ -178,28 +178,35 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
         edge_distance_expansion = map_neighbor_list_(edge_distance_expansion)
 
         # pad batch
-        (
-            atomic_numbers,
-            node_direction_expansion,
-            edge_distance_expansion,
-            edge_direction,
-            neighbor_list,
-            neighbor_mask,
-            node_batch,
-            node_padding_mask,
-            graph_padding_mask,
-        ) = pad_batch(
-            max_num_nodes_per_batch=self.molecular_graph_cfg.max_num_nodes_per_batch,
-            atomic_numbers=atomic_numbers,
-            node_direction_expansion=node_direction_expansion,
-            edge_distance_expansion=edge_distance_expansion,
-            edge_direction=edge_direction,
-            neighbor_list=neighbor_list,
-            neighbor_mask=neighbor_mask,
-            node_batch=data.batch,
-            num_graphs=data.num_graphs,
-            batch_size=self.global_cfg.batch_size,
-        )
+        if self.global_cfg.use_padding:
+            (
+                atomic_numbers,
+                node_direction_expansion,
+                edge_distance_expansion,
+                edge_direction,
+                neighbor_list,
+                neighbor_mask,
+                node_batch,
+                node_padding_mask,
+                graph_padding_mask,
+            ) = pad_batch(
+                max_num_nodes_per_batch=self.molecular_graph_cfg.max_num_nodes_per_batch,
+                atomic_numbers=atomic_numbers,
+                node_direction_expansion=node_direction_expansion,
+                edge_distance_expansion=edge_distance_expansion,
+                edge_direction=edge_direction,
+                neighbor_list=neighbor_list,
+                neighbor_mask=neighbor_mask,
+                node_batch=data.batch,
+                num_graphs=data.num_graphs,
+                batch_size=self.global_cfg.batch_size,
+            )
+        else:
+            node_padding_mask = torch.ones_like(atomic_numbers, dtype=torch.bool)
+            graph_padding_mask = torch.ones(
+                data.num_graphs, dtype=torch.bool, device=data.batch.device
+            )
+            node_batch = data.batch
 
         # patch singleton atom
         edge_direction, neighbor_list, neighbor_mask = patch_singleton_atom(

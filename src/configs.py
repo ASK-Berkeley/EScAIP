@@ -14,6 +14,7 @@ class GlobalConfigs:
     ]
     use_export: bool = False
     use_compile: bool = True
+    use_padding: bool = True
 
 
 @dataclass
