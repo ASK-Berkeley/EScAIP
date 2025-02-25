@@ -98,7 +98,7 @@ class OutputLayer(nn.Module):
         Shape ([num_nodes, hidden_size] or [num_nodes, max_neighbor, hidden_size])
         """
         # mlp
-        features = features + self.ffn(features)
+        features = self.ffn(features)
 
         # final output layer
         return self.final_output(features)

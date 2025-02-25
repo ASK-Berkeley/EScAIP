@@ -52,6 +52,13 @@ def data_preprocess(
     ).to(data.pos.device)
 
     # generate graph
+    #### A patch for FAIR SPICE data, remove later
+    if molecular_graph_cfg.use_pbc and "cell" not in data:
+        cell = torch.eye(3, device=data.pos.device, dtype=data.pos.dtype)
+        cell = cell * 200.0
+        cell = cell.unsqueeze(0).expand(data.natoms.shape[0], -1, -1)
+        data.cell = cell
+        data.fixed = torch.zeros_like(data.atomic_numbers).bool()
     graph = generate_graph_fn(data)
 
     # sort edge index according to receiver node

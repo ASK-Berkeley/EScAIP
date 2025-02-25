@@ -1,5 +1,8 @@
+import math
+
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from ..configs import (
     GlobalConfigs,
@@ -50,9 +53,7 @@ class EfficientGraphAttentionBlock(nn.Module):
 
         # Normalization
         normalization = NormalizationType(reg_cfg.normalization)
-        self.norm_attn = get_normalization_layer(normalization, is_graph=False)(
-            global_cfg.hidden_size
-        )
+        self.norm_attn = get_normalization_layer(normalization)(global_cfg.hidden_size)
         self.norm_ffn = get_normalization_layer(normalization)(global_cfg.hidden_size)
 
         # Stochastic depth
@@ -78,8 +79,8 @@ class EfficientGraphAttentionBlock(nn.Module):
         # x = x + self.stochastic_depth(self.feedforward(self.norm_ffn(x)))
 
         # attention
-        node_hidden = self.norm_attn(node_features)
-        node_hidden, edge_hidden = self.graph_attention(data, node_hidden)
+        node_hidden, edge_hidden = self.norm_attn(node_features, edge_features)
+        node_hidden, edge_hidden = self.graph_attention(data, node_hidden, edge_hidden)
         node_hidden, edge_hidden = self.stochastic_depth_attn(
             node_hidden, edge_hidden, data.node_batch
         )
@@ -116,18 +117,42 @@ class EfficientGraphAttention(BaseGraphNeuralNetworkLayer):
         super().__init__(global_cfg, molecular_graph_cfg, gnn_cfg, reg_cfg)
 
         # Edge linear layer
-        self.edge_linear = self.get_edge_linear(gnn_cfg, global_cfg, reg_cfg)
+        self.edge_attr_linear = self.get_edge_linear(gnn_cfg, global_cfg, reg_cfg)
 
         # Node hidden layer
-        self.node_linear = self.get_node_linear(global_cfg, reg_cfg)
+        self.node_hidden_linear = self.get_node_linear(global_cfg, reg_cfg)
 
-        # message linear
-        self.message_linear = get_linear(
-            in_features=global_cfg.hidden_size * 2,
+        # Edge hidden layer
+        self.edge_hidden_linear = get_linear(
+            in_features=global_cfg.hidden_size,
             out_features=global_cfg.hidden_size,
             activation=global_cfg.activation,
             bias=True,
+            dropout=reg_cfg.mlp_dropout,
         )
+
+        # message linear
+        self.use_message_gate = gnn_cfg.use_message_gate
+        if self.use_message_gate:
+            self.gate_linear = get_linear(
+                in_features=global_cfg.hidden_size * 2,
+                out_features=global_cfg.hidden_size,
+                activation=None,
+                bias=True,
+            )
+            self.candidate_linear = get_linear(
+                in_features=global_cfg.hidden_size * 2,
+                out_features=global_cfg.hidden_size,
+                activation=None,
+                bias=True,
+            )
+        else:
+            self.message_linear = get_linear(
+                in_features=global_cfg.hidden_size * 3,
+                out_features=global_cfg.hidden_size,
+                activation=global_cfg.activation,
+                bias=True,
+            )
 
         # Multi-head attention
         self.multi_head_attention = nn.MultiheadAttention(
@@ -141,29 +166,71 @@ class EfficientGraphAttention(BaseGraphNeuralNetworkLayer):
         # scalar for attention bias
         self.use_angle_embedding = gnn_cfg.use_angle_embedding
         if self.use_angle_embedding:
-            self.attn_scalar = nn.Parameter(torch.tensor(1.0), requires_grad=True)
+            self.attn_scalar = nn.Parameter(
+                torch.ones(gnn_cfg.atten_num_heads), requires_grad=True
+            )
         else:
             self.attn_scalar = torch.tensor(1.0)
+
+        # Graph attention for aggregation
+        # ref: "How Attentive are Graph Attention Networks?" <https://arxiv.org/abs/2105.14491>
+        self.use_graph_attention = gnn_cfg.use_graph_attention
+        if self.use_graph_attention:
+            self.attn_weight = nn.Parameter(
+                torch.empty(
+                    1,
+                    1,
+                    gnn_cfg.atten_num_heads,
+                    global_cfg.hidden_size // gnn_cfg.atten_num_heads,
+                ),
+                requires_grad=True,
+            )
+            # glorot initialization
+            stdv = math.sqrt(
+                6.0 / (self.attn_weight.shape[-2] + self.attn_weight.shape[-1])
+            )
+            self.attn_weight.data.uniform_(-stdv, stdv)
 
     def forward(
         self,
         data: GraphAttentionData,
         node_features: torch.Tensor,
+        edge_features: torch.Tensor,
     ):
-        # Get edge features
-        edge_features = self.get_edge_features(data)
-        edge_hidden = self.edge_linear(edge_features)
+        # Get edge attributes
+        edge_attr = self.get_edge_features(data)
+        edge_attr = self.edge_attr_linear(edge_attr)
 
         # Get node features
         node_features = self.get_node_features(node_features, data.neighbor_list)
-        node_hidden = self.node_linear(node_features)
+        node_hidden = self.node_hidden_linear(node_features)
+
+        # Get edge faetures
+        edge_hidden = self.edge_hidden_linear(edge_features)
 
         # Concatenate edge and node features (num_nodes, num_neighbors, hidden_size)
-        message = self.message_linear(torch.cat([edge_hidden, node_hidden], dim=-1))
+        if self.use_message_gate:
+            message = torch.cat([edge_attr, node_hidden], dim=-1)
+            update_gate = torch.sigmoid(self.gate_linear(message))
+            candidate = torch.tanh(self.candidate_linear(message))
+            message = update_gate * candidate + (1 - update_gate) * edge_hidden
+        else:
+            message = self.message_linear(
+                torch.cat([edge_attr, edge_hidden, node_hidden], dim=-1)
+            )
 
         # Multi-head self-attention
         if self.use_angle_embedding:
-            attn_mask = data.attn_mask + data.angle_embedding * self.attn_scalar
+            angle_embedding = data.angle_embedding.reshape(
+                -1,
+                self.attn_scalar.shape[0],
+                data.angle_embedding.shape[-2],
+                data.angle_embedding.shape[-1],
+            ) * self.attn_scalar.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            angle_embedding = angle_embedding.reshape(
+                -1, data.angle_embedding.shape[-2], data.angle_embedding.shape[-1]
+            )
+            attn_mask = data.attn_mask + angle_embedding
         else:
             attn_mask = data.attn_mask
         edge_output = self.multi_head_attention(
@@ -176,7 +243,25 @@ class EfficientGraphAttention(BaseGraphNeuralNetworkLayer):
         )[0]
 
         # Aggregation
-        node_output = self.aggregate(edge_output, data.neighbor_mask)
+        if self.use_graph_attention:
+            num_nodes, num_neighbors, _ = edge_output.shape
+            _, _, num_heads, head_dim = self.attn_weight.shape
+
+            edge_output = edge_output.view(
+                num_nodes, num_neighbors, num_heads, head_dim
+            )
+            # alpha (num_nodes, num_neighbors, num_heads)
+            alpha = (edge_output * self.attn_weight).sum(-1)
+            alpha = F.leaky_relu(alpha, negative_slope=0.2)
+            alpha = alpha.masked_fill(
+                data.neighbor_mask.unsqueeze(-1) == 0, float("-inf")
+            )
+            alpha = F.softmax(alpha, dim=1)
+            node_output = (alpha.unsqueeze(-1) * edge_output).sum(1)
+            node_output = node_output.view(num_nodes, -1)
+            edge_output = edge_output.view(num_nodes, num_neighbors, -1)
+        else:
+            node_output = self.aggregate(edge_output, data.neighbor_mask)
 
         return node_output, edge_output
 

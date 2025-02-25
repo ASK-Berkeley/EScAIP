@@ -113,7 +113,8 @@ class EScAIPBackbone(nn.Module, GraphModelMixin):
         )
 
         # init weights
-        self.apply(init_linear_weights)
+        # self.apply(init_linear_weights)
+        self.init_weights()
 
         # enable torch.set_float32_matmul_precision('high')
         torch.set_float32_matmul_precision("high")
@@ -170,6 +171,29 @@ class EScAIPBackbone(nn.Module, GraphModelMixin):
     @torch.jit.ignore
     def no_weight_decay(self):
         return no_weight_decay(self)
+
+    def init_weights(self):
+        names = [
+            "ffn",
+            "feedforward",
+            "edge_hidden",
+            "node_hidden",
+            "edge_attr",
+            "embedding",
+            "message",
+        ]
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                if isinstance(module, torch.nn.Linear):
+                    # check if the module is in the list of names
+                    if any([n in name for n in names]):
+                        nn.init.xavier_uniform_(
+                            module.weight, gain=nn.init.calculate_gain("relu")
+                        )
+                    else:
+                        nn.init.xavier_uniform_(module.weight, gain=1.0)
+                if module.bias is not None:
+                    module.bias.data.zero_()
 
 
 class EScAIPHeadBase(nn.Module, HeadInterface):
@@ -256,7 +280,7 @@ class EScAIPEnergyHead(EScAIPHeadBase):
         )
         self.energy_reduce = self.gnn_cfg.energy_reduce
 
-        self.post_init(gain=0.01)
+        self.post_init(gain=0.1)
 
     def compiled_forward(self, node_features, data: GraphAttentionData):
         energy_output = self.energy_layer(node_features)

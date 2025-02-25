@@ -47,7 +47,7 @@ class InputLayer(BaseGraphNeuralNetworkLayer):
         super().__init__(global_cfg, molecular_graph_cfg, gnn_cfg, reg_cfg)
 
         # Edge linear layer
-        self.edge_linear = self.get_edge_linear(gnn_cfg, global_cfg, reg_cfg)
+        self.edge_attr_linear = self.get_edge_linear(gnn_cfg, global_cfg, reg_cfg)
 
         # ffn for edge features
         self.edge_ffn = get_feedforward(
@@ -68,7 +68,7 @@ class InputLayer(BaseGraphNeuralNetworkLayer):
         edge_features = self.get_edge_features(inputs)
 
         # Edge processing
-        edge_hidden = self.edge_linear(edge_features)
+        edge_hidden = self.edge_attr_linear(edge_features)
         edge_output = edge_hidden + self.edge_ffn(self.norm(edge_hidden))
 
         # Aggregation

@@ -46,6 +46,8 @@ class GraphNeuralNetworksConfigs:
     output_hidden_layer_multiplier: int
     ffn_hidden_layer_multiplier: int
     use_angle_embedding: bool = True
+    use_graph_attention: bool = False
+    use_message_gate: bool = False
     energy_reduce: Literal["sum", "mean"] = "mean"
 
 

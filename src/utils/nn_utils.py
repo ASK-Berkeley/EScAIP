@@ -100,6 +100,14 @@ def get_feedforward(
     """
     Build a feedforward layer with optional activation function.
     """
+    if hidden_layer_multiplier == 0:
+        return get_linear(
+            in_features=hidden_dim,
+            out_features=hidden_dim,
+            bias=bias,
+            activation=None,
+            dropout=dropout,
+        )
     return nn.Sequential(
         get_linear(
             in_features=hidden_dim,
