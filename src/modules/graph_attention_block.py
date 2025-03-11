@@ -53,8 +53,18 @@ class EfficientGraphAttentionBlock(nn.Module):
 
         # Normalization
         normalization = NormalizationType(reg_cfg.normalization)
-        self.norm_attn = get_normalization_layer(normalization)(global_cfg.hidden_size)
-        self.norm_ffn = get_normalization_layer(normalization)(global_cfg.hidden_size)
+        self.norm_attn_node = get_normalization_layer(normalization)(
+            global_cfg.hidden_size
+        )
+        self.norm_attn_edge = get_normalization_layer(normalization, "edge")(
+            global_cfg.hidden_size
+        )
+        self.norm_ffn_node = get_normalization_layer(normalization)(
+            global_cfg.hidden_size
+        )
+        self.norm_ffn_edge = get_normalization_layer(normalization, "edge")(
+            global_cfg.hidden_size
+        )
 
         # Stochastic depth
         self.stochastic_depth_attn = (
@@ -79,7 +89,12 @@ class EfficientGraphAttentionBlock(nn.Module):
         # x = x + self.stochastic_depth(self.feedforward(self.norm_ffn(x)))
 
         # attention
-        node_hidden, edge_hidden = self.norm_attn(node_features, edge_features)
+        # node_features, edge_features = self.norm_attn(node_features, edge_features)
+        # node_hidden, edge_hidden = self.graph_attention(data, node_features, edge_features)
+        node_hidden, edge_hidden = (
+            self.norm_attn_node(node_features),
+            self.norm_attn_edge(edge_features, data.neighbor_mask),
+        )
         node_hidden, edge_hidden = self.graph_attention(data, node_hidden, edge_hidden)
         node_hidden, edge_hidden = self.stochastic_depth_attn(
             node_hidden, edge_hidden, data.node_batch
@@ -90,7 +105,12 @@ class EfficientGraphAttentionBlock(nn.Module):
         )
 
         # feedforward
-        node_hidden, edge_hidden = self.norm_ffn(node_features, edge_features)
+        # node_features, edge_features = self.norm_ffn(node_features, edge_features)
+        # node_hidden, edge_hidden = self.feedforward(node_features, edge_features)
+        node_hidden, edge_hidden = (
+            self.norm_ffn_node(node_features),
+            self.norm_ffn_edge(edge_features, data.neighbor_mask),
+        )
         node_hidden, edge_hidden = self.feedforward(node_hidden, edge_hidden)
         node_hidden, edge_hidden = self.stochastic_depth_ffn(
             node_hidden, edge_hidden, data.node_batch
@@ -118,6 +138,9 @@ class EfficientGraphAttention(BaseGraphNeuralNetworkLayer):
 
         # Edge linear layer
         self.edge_attr_linear = self.get_edge_linear(gnn_cfg, global_cfg, reg_cfg)
+        self.edge_attr_norm = get_normalization_layer(reg_cfg.normalization, "edge")(
+            global_cfg.hidden_size
+        )
 
         # Node hidden layer
         self.node_hidden_linear = self.get_node_linear(global_cfg, reg_cfg)
@@ -200,6 +223,7 @@ class EfficientGraphAttention(BaseGraphNeuralNetworkLayer):
         # Get edge attributes
         edge_attr = self.get_edge_features(data)
         edge_attr = self.edge_attr_linear(edge_attr)
+        edge_attr = self.edge_attr_norm(edge_attr, data.neighbor_mask)
 
         # Get node features
         node_features = self.get_node_features(node_features, data.neighbor_list)
@@ -283,14 +307,14 @@ class FeedForwardNetwork(nn.Module):
             activation=global_cfg.activation,
             hidden_layer_multiplier=gnn_cfg.ffn_hidden_layer_multiplier,
             bias=True,
-            dropout=reg_cfg.mlp_dropout,
+            dropout=reg_cfg.node_ffn_dropout,
         )
         self.mlp_edge = get_feedforward(
             hidden_dim=global_cfg.hidden_size,
             activation=global_cfg.activation,
             hidden_layer_multiplier=gnn_cfg.ffn_hidden_layer_multiplier,
             bias=True,
-            dropout=reg_cfg.mlp_dropout,
+            dropout=reg_cfg.edge_ffn_dropout,
         )
 
     def forward(self, node_features: torch.Tensor, edge_features: torch.Tensor):

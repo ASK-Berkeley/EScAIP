@@ -57,6 +57,10 @@ class RegularizationConfigs:
     atten_dropout: float
     stochastic_depth_prob: float
     normalization: Literal["layernorm", "rmsnorm", "skip"]
+    node_ffn_dropout: float
+    edge_ffn_dropout: float
+    scalar_output_dropout: float
+    vector_output_dropout: float
 
 
 @dataclass

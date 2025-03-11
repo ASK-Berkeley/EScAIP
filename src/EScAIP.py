@@ -133,7 +133,9 @@ class EScAIPBackbone(nn.Module, GraphModelMixin):
         node_features, edge_features = self.input_block(data)
 
         # input readout
-        readouts = self.readout_layers[0](node_features, edge_features)
+        readouts = self.readout_layers[0](
+            node_features, edge_features, data.neighbor_mask
+        )
         node_readouts = [readouts[0]]
         edge_readouts = [readouts[1]]
 
@@ -142,13 +144,16 @@ class EScAIPBackbone(nn.Module, GraphModelMixin):
             node_features, edge_features = self.transformer_blocks[idx](
                 data, node_features, edge_features
             )
-            readouts = self.readout_layers[idx + 1](node_features, edge_features)
+            readouts = self.readout_layers[idx + 1](
+                node_features, edge_features, data.neighbor_mask
+            )
             node_readouts.append(readouts[0])
             edge_readouts.append(readouts[1])
 
         node_features, edge_features = self.output_projection(
             node_readouts=torch.cat(node_readouts, dim=-1),
             edge_readouts=torch.cat(edge_readouts, dim=-1),
+            neighbor_mask=data.neighbor_mask,
         )
 
         return {

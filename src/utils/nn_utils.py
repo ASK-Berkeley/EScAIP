@@ -168,33 +168,81 @@ class Skip(nn.Module):
         return x
 
 
-class LayerNormGraph(nn.Module):
-    def __init__(self, hidden_size: int, **kwargs):
+class MaskedRMSNorm(nn.Module):
+    # TODO: fix this
+    def __init__(self, hidden_size):
         super().__init__()
-        self.node_norm = nn.LayerNorm(hidden_size, **kwargs)
-        self.edge_norm = nn.LayerNorm(hidden_size, **kwargs)
+        self.norm = nn.RMSNorm(hidden_size)
+        # self.hidden_size = hidden_size
+        # self.eps = eps
+        # self.scale = nn.Parameter(torch.ones(hidden_size))  # Learnable scaling factor
 
-    def forward(self, node_features, edge_features):
-        node_features = self.node_norm(node_features)
-        edge_features = self.edge_norm(edge_features)
-        return node_features, edge_features
+    def forward(self, x, mask):
+        """
+        x: (N, Max_nei, Hidden_size) - edge features
+        mask: (N, Max_nei) - 1 for real neighbors, 0 for padding
+        """
+        return self.norm(x)
+        # # Expand mask to match hidden size (N, Max_nei, Hidden_size)
+        # mask = mask.unsqueeze(-1).float()
+
+        # # Compute RMS only over valid neighbors
+        # norm_factor = (x.pow(2) * mask).sum(dim=1, keepdim=True)  # Sum over neighbors
+        # count = mask.sum(dim=1, keepdim=True)  # Number of valid neighbors per node
+        # rms = torch.sqrt(norm_factor / (count + self.eps))  # Avoid divide-by-zero
+
+        # # Normalize only valid elements
+        # x = x / (rms + self.eps)
+
+        # # Apply learnable scale
+        # x = x * self.scale
+
+        # return x * mask
 
 
-class RMSNormGraph(nn.Module):
-    def __init__(self, hidden_size: int, **kwargs):
+class MaskedLayerNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
         super().__init__()
-        self.node_norm = nn.RMSNorm(hidden_size, **kwargs)
-        self.edge_norm = nn.RMSNorm(hidden_size, **kwargs)
+        self.hidden_size = hidden_size
+        self.eps = eps
+        self.gamma = nn.Parameter(torch.ones(hidden_size))  # Scale
+        self.beta = nn.Parameter(torch.zeros(hidden_size))  # Shift
 
-    def forward(self, node_features, edge_features):
-        node_features = self.node_norm(node_features)
-        edge_features = self.edge_norm(edge_features)
-        return node_features, edge_features
+    def forward(self, x, mask):
+        """
+        x: (N, Max_nei, Hidden_size)
+        mask: (N, Max_nei) - 1 for valid, 0 for padded
+        """
+        mask = mask.unsqueeze(-1).float()  # (N, Max_nei, 1)
+
+        # Compute mean only over valid neighbors
+        mean = (x * mask).sum(dim=1, keepdim=True) / (
+            mask.sum(dim=1, keepdim=True) + self.eps
+        )
+
+        # Compute variance
+        variance = ((x - mean).pow(2) * mask).sum(dim=1, keepdim=True) / (
+            mask.sum(dim=1, keepdim=True) + self.eps
+        )
+        std = torch.sqrt(variance + self.eps)
+
+        # Normalize and scale
+        x = (x - mean) / std
+        x = x * self.gamma + self.beta
+
+        return x * mask
 
 
-def get_normalization_layer(normalization_type: NormalizationType, is_graph=True):
-    return {
-        NormalizationType.LayerNorm: LayerNormGraph if is_graph else nn.LayerNorm,
-        NormalizationType.Skip: Skip,
-        NormalizationType.RMSNorm: RMSNormGraph if is_graph else nn.RMSNorm,
-    }[normalization_type]
+def get_normalization_layer(normalization_type: NormalizationType, type="default"):
+    if normalization_type == NormalizationType.Skip:
+        return Skip
+    if type == "default":
+        return {
+            NormalizationType.LayerNorm: nn.LayerNorm,
+            NormalizationType.RMSNorm: nn.RMSNorm,
+        }[normalization_type]
+    if type == "edge":
+        return {
+            NormalizationType.LayerNorm: MaskedLayerNorm,
+            NormalizationType.RMSNorm: MaskedRMSNorm,
+        }[normalization_type]

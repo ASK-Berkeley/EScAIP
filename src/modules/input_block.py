@@ -27,13 +27,18 @@ class InputBlock(nn.Module):
 
         self.input_layer = InputLayer(global_cfg, molecular_graph_cfg, gnn_cfg, reg_cfg)
 
-        self.norm = get_normalization_layer(reg_cfg.normalization)(
+        self.norm_node = get_normalization_layer(reg_cfg.normalization)(
+            global_cfg.hidden_size
+        )
+        self.norm_edge = get_normalization_layer(reg_cfg.normalization, "edge")(
             global_cfg.hidden_size
         )
 
     def forward(self, inputs: GraphAttentionData):
         node_features, edge_features = self.input_layer(inputs)
-        return self.norm(node_features, edge_features)
+        return self.norm_node(node_features), self.norm_edge(
+            edge_features, inputs.neighbor_mask
+        )
 
 
 class InputLayer(BaseGraphNeuralNetworkLayer):
@@ -48,19 +53,17 @@ class InputLayer(BaseGraphNeuralNetworkLayer):
 
         # Edge linear layer
         self.edge_attr_linear = self.get_edge_linear(gnn_cfg, global_cfg, reg_cfg)
+        self.edge_attr_norm = get_normalization_layer(reg_cfg.normalization, "edge")(
+            global_cfg.hidden_size
+        )
 
         # ffn for edge features
         self.edge_ffn = get_feedforward(
             hidden_dim=global_cfg.hidden_size,
             activation=global_cfg.activation,
             hidden_layer_multiplier=1,
-            dropout=reg_cfg.mlp_dropout,
+            dropout=reg_cfg.edge_ffn_dropout,
             bias=True,
-        )
-
-        # normalization
-        self.norm = get_normalization_layer(reg_cfg.normalization, is_graph=False)(
-            global_cfg.hidden_size
         )
 
     def forward(self, inputs: GraphAttentionData):
@@ -69,7 +72,8 @@ class InputLayer(BaseGraphNeuralNetworkLayer):
 
         # Edge processing
         edge_hidden = self.edge_attr_linear(edge_features)
-        edge_output = edge_hidden + self.edge_ffn(self.norm(edge_hidden))
+        edge_hidden = self.edge_attr_norm(edge_hidden, inputs.neighbor_mask)
+        edge_output = edge_hidden + self.edge_ffn(edge_hidden)
 
         # Aggregation
         node_output = self.aggregate(edge_output, inputs.neighbor_mask)

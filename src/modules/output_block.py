@@ -33,18 +33,30 @@ class OutputProjection(nn.Module):
             activation=global_cfg.activation,
             bias=True,
         )
-        self.readout_norm = get_normalization_layer(
-            reg_cfg.normalization, is_graph=True
-        )(global_cfg.hidden_size * (gnn_cfg.num_layers + 1))
-        self.output_norm = get_normalization_layer(
-            reg_cfg.normalization, is_graph=True
-        )(global_cfg.hidden_size)
+        self.readout_norm_node = get_normalization_layer(reg_cfg.normalization)(
+            global_cfg.hidden_size * (gnn_cfg.num_layers + 1)
+        )
+        self.readout_norm_edge = get_normalization_layer(reg_cfg.normalization, "edge")(
+            global_cfg.hidden_size * (gnn_cfg.num_layers + 1)
+        )
+        self.output_norm_node = get_normalization_layer(reg_cfg.normalization)(
+            global_cfg.hidden_size
+        )
+        self.output_norm_edge = get_normalization_layer(reg_cfg.normalization, "edge")(
+            global_cfg.hidden_size
+        )
 
-    def forward(self, node_readouts, edge_readouts):
-        node_readouts, edge_readouts = self.readout_norm(node_readouts, edge_readouts)
+    def forward(self, node_readouts, edge_readouts, neighbor_mask):
+        node_readouts, edge_readouts = (
+            self.readout_norm_node(node_readouts),
+            self.readout_norm_edge(edge_readouts, neighbor_mask),
+        )
         node_features = self.node_projection(node_readouts)
         edge_features = self.edge_projection(edge_readouts)
-        node_features, edge_features = self.output_norm(node_features, edge_features)
+        node_features, edge_features = (
+            self.output_norm_node(node_features),
+            self.output_norm_edge(edge_features, neighbor_mask),
+        )
         return node_features, edge_features
 
 
@@ -76,7 +88,9 @@ class OutputLayer(nn.Module):
             hidden_dim=global_cfg.hidden_size,
             activation=global_cfg.activation,
             hidden_layer_multiplier=gnn_cfg.output_hidden_layer_multiplier,
-            dropout=reg_cfg.mlp_dropout,
+            dropout=reg_cfg.scalar_output_dropout
+            if output_type == "Scalar"
+            else reg_cfg.vector_output_dropout,
             bias=True,
         )
 
