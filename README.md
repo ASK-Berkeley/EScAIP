@@ -37,7 +37,7 @@ Use FairChem Calculator to simulate with the models. See the [FairChem documenta
 
 Refer to the [model architecture](model_architecture.md) for more details.
 
-Note: we have seen some issues with the attention kernels versions. This issue is fixed now. Please refer to the Appendix C of the [updated paper](https://arxiv.org/abs/2410.24169) for more details.
+Note: we have seen some performance difference when using different versions of attention kernels. This issue is fixed now. Please refer to the Appendix C of the [updated paper](https://arxiv.org/abs/2410.24169) for more details.
 
 ## Pretrained Models
 
