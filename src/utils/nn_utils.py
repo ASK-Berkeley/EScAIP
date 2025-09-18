@@ -1,9 +1,10 @@
-from typing import Optional
+from __future__ import annotations
+
 from enum import Enum
+from typing import Optional
 
 import torch
 import torch.nn as nn
-
 
 ## The following part is from xformers, copied here in case it's deprecated
 ## Ref: https://github.com/facebookresearch/xformers/blob/main/xformers/components/activations.py
@@ -76,13 +77,15 @@ def get_linear(
     in_features: int,
     out_features: int,
     bias: bool = False,
-    activation: Activation = None,
+    activation: Activation | None = None,
     dropout: float = 0.0,
 ):
     """
     Build a linear layer with optional activation and dropout.
     """
-    layers = [nn.Linear(in_features=in_features, out_features=out_features, bias=bias)]
+    layers: list[nn.Module] = [
+        nn.Linear(in_features=in_features, out_features=out_features, bias=bias)
+    ]
     if activation:
         layers.append(build_activation(activation))
     if dropout > 0.0:
@@ -92,7 +95,7 @@ def get_linear(
 
 def get_feedforward(
     hidden_dim: int,
-    activation: Activation,
+    activation: Activation | None,
     hidden_layer_multiplier: int,
     bias: bool = False,
     dropout: float = 0.0,
@@ -100,6 +103,14 @@ def get_feedforward(
     """
     Build a feedforward layer with optional activation function.
     """
+    if hidden_layer_multiplier == 0:
+        return get_linear(
+            in_features=hidden_dim,
+            out_features=hidden_dim,
+            bias=bias,
+            activation=None,
+            dropout=dropout,
+        )
     return nn.Sequential(
         get_linear(
             in_features=hidden_dim,
@@ -126,9 +137,8 @@ def no_weight_decay(model):
     for module_name, module in model.named_modules():
         if isinstance(module, (nn.Linear, nn.Embedding, nn.LayerNorm, nn.RMSNorm)):
             for parameter_name, _ in module.named_parameters():
-                if isinstance(module, torch.nn.Linear):
-                    if "weight" in parameter_name:
-                        continue
+                if isinstance(module, torch.nn.Linear) and "weight" in parameter_name:
+                    continue
                 global_parameter_name = module_name + "." + parameter_name
                 assert global_parameter_name in named_parameters_list
                 no_wd_list.append(global_parameter_name)
@@ -160,33 +170,9 @@ class Skip(nn.Module):
         return x
 
 
-class LayerNormGraph(nn.Module):
-    def __init__(self, hidden_size: int, **kwargs):
-        super().__init__()
-        self.node_norm = nn.LayerNorm(hidden_size, **kwargs)
-        self.edge_norm = nn.LayerNorm(hidden_size, **kwargs)
-
-    def forward(self, node_features, edge_features):
-        node_features = self.node_norm(node_features)
-        edge_features = self.edge_norm(edge_features)
-        return node_features, edge_features
-
-
-class RMSNormGraph(nn.Module):
-    def __init__(self, hidden_size: int, **kwargs):
-        super().__init__()
-        self.node_norm = nn.RMSNorm(hidden_size, **kwargs)
-        self.edge_norm = nn.RMSNorm(hidden_size, **kwargs)
-
-    def forward(self, node_features, edge_features):
-        node_features = self.node_norm(node_features)
-        edge_features = self.edge_norm(edge_features)
-        return node_features, edge_features
-
-
-def get_normalization_layer(normalization_type: NormalizationType, is_graph=True):
+def get_normalization_layer(normalization_type: NormalizationType):
     return {
-        NormalizationType.LayerNorm: LayerNormGraph if is_graph else nn.LayerNorm,
         NormalizationType.Skip: Skip,
-        NormalizationType.RMSNorm: RMSNormGraph if is_graph else nn.RMSNorm,
+        NormalizationType.LayerNorm: nn.LayerNorm,
+        NormalizationType.RMSNorm: nn.RMSNorm,
     }[normalization_type]

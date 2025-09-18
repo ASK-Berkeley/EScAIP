@@ -2,6 +2,8 @@
 Modified from https://github.com/pytorch/vision/blob/main/torchvision/ops/stochastic_depth.py
 """
 
+from __future__ import annotations
+
 import torch
 from torch import nn
 
@@ -32,7 +34,7 @@ def stochastic_depth_2d(
     batch_size = batch.max() + 1
     survival_rate = 1.0 - p
     size = [batch_size] + [1] * (input.ndim - 1)
-    noise = torch.empty(size, dtype=input.dtype, device=input.device)
+    noise = torch.empty(size, dtype=input.dtype, device=input.device)  # type: ignore
     noise = noise.bernoulli_(survival_rate)
     if survival_rate > 0.0:
         noise.div_(survival_rate)
@@ -51,7 +53,7 @@ def stochastic_depth_3d(
     batch_size = batch.max() + 1
     survival_rate = 1.0 - p
     size = [batch_size] + [1] * (input.ndim - 1)
-    noise = torch.empty(size, dtype=input.dtype, device=input.device)
+    noise = torch.empty(size, dtype=input.dtype, device=input.device)  # type: ignore
     noise = noise.bernoulli_(survival_rate)
     if survival_rate > 0.0:
         noise.div_(survival_rate)

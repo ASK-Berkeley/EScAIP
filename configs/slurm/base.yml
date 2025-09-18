@@ -1,6 +1,0 @@
-slurm:
-  account: xxxx
-  constraint: gpu
-  gpu_bind: none
-  mail_type: begin,end,fail
-  mail_user: xxxx@xxxx.xxx

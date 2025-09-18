@@ -1,15 +1,20 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import torch
 from torch import nn
 
-from ..configs import (
-    GlobalConfigs,
-    GraphNeuralNetworksConfigs,
-    MolecularGraphConfigs,
-    RegularizationConfigs,
-)
-from ..utils.graph_utils import map_sender_receiver_feature
-from ..utils.nn_utils import get_linear
-from ..custom_types import GraphAttentionData
+if TYPE_CHECKING:
+    from fairchem.core.models.escaip.configs import (
+        GlobalConfigs,
+        GraphNeuralNetworksConfigs,
+        MolecularGraphConfigs,
+        RegularizationConfigs,
+    )
+    from fairchem.core.models.escaip.custom_types import GraphAttentionData
+from fairchem.core.models.escaip.utils.graph_utils import map_sender_receiver_feature
+from fairchem.core.models.escaip.utils.nn_utils import Activation, get_linear
 
 
 class BaseGraphNeuralNetworkLayer(nn.Module):
@@ -42,14 +47,14 @@ class BaseGraphNeuralNetworkLayer(nn.Module):
         self.source_direction_embedding = get_linear(
             in_features=gnn_cfg.node_direction_expansion_size,
             out_features=gnn_cfg.node_direction_embedding_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             bias=True,
             dropout=reg_cfg.mlp_dropout,
         )
         self.target_direction_embedding = get_linear(
             in_features=gnn_cfg.node_direction_expansion_size,
             out_features=gnn_cfg.node_direction_embedding_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             bias=True,
             dropout=reg_cfg.mlp_dropout,
         )
@@ -58,7 +63,7 @@ class BaseGraphNeuralNetworkLayer(nn.Module):
         self.edge_distance_embedding = get_linear(
             in_features=gnn_cfg.edge_distance_expansion_size,
             out_features=gnn_cfg.edge_distance_embedding_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             bias=True,
             dropout=reg_cfg.mlp_dropout,
         )
@@ -74,7 +79,7 @@ class BaseGraphNeuralNetworkLayer(nn.Module):
             + 2 * gnn_cfg.node_direction_embedding_size
             + 2 * gnn_cfg.atom_embedding_size,
             out_features=global_cfg.hidden_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             bias=True,
             dropout=reg_cfg.mlp_dropout,
         )
@@ -85,7 +90,7 @@ class BaseGraphNeuralNetworkLayer(nn.Module):
         return get_linear(
             in_features=2 * global_cfg.hidden_size,
             out_features=global_cfg.hidden_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             bias=True,
             dropout=reg_cfg.mlp_dropout,
         )
@@ -137,8 +142,10 @@ class BaseGraphNeuralNetworkLayer(nn.Module):
         return torch.cat([sender_feature, receiver_feature], dim=-1)
 
     def aggregate(self, edge_features, neighbor_mask):
-        neighbor_count = neighbor_mask.sum(dim=1, keepdim=True) + 1e-5
-        return (edge_features * neighbor_mask.unsqueeze(-1)).sum(dim=1) / neighbor_count
+        return edge_features[:, 0]
+        # neighbor_count = neighbor_mask.sum(dim=1, keepdim=True) + 1e-5
+        # neighbor_count = neighbor_count.to(edge_features.dtype)
+        # return (edge_features * neighbor_mask.unsqueeze(-1)).sum(dim=1) / neighbor_count
 
     def forward(self):
         raise NotImplementedError

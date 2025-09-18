@@ -1,0 +1,16 @@
+run_dir: /checkpoint/ericqu/ESCAIPRUNDIR
+data_root_dir: /large_experiments/opencatalyst/datasets-asedb
+mode: SLURM
+device: CUDA
+ranks_per_node: 8
+dataloader_workers: 0
+timeout_hr: 72
+debug: False
+mem_gb: 64
+cpus_per_task: 9
+account: null
+partition: "learnfair"
+additional_parameters:
+  # constraint: "volta32gb"
+  constraint: "volta32gb,bldg2"
+  exclude: "learnfair1148,learnfair1161,learnfair5065,learnfair1142,learnfair1093,learnfair1094,learnfair1083,learnfair2001,learnfair1209,learnfair1981,learnfair1084,learnfair1670,learnfair1567,learnfair1246,learnfair1082,learnfair1086,learnfair1229,learnfair1221,learnfair1097,learnfair1081,learnfair1089,learnfair2155,learnfair2079,learnfair2255,learnfair2257,learnfair2250,learnfair2240,learnfair2080,learnfair2237,learnfair2154,learnfair2246,learnfair2249,learnfair2254,learnfair7695,learnfair7628,learnfair2253,learnfair2245,learnfair7630,learnfair7666,learnfair7680,learnfair2151,learnfair2122,learnfair2148,learnfair2153,learnfair2156"

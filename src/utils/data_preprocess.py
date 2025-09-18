@@ -1,34 +1,42 @@
-from functools import partial
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
 
 import torch
-import torch_geometric
 
-from fairchem.core.models.scn.smearing import (
+if TYPE_CHECKING:
+    from fairchem.core.datasets.atomic_data import AtomicData
+    from fairchem.core.models.escaip.configs import (
+        GlobalConfigs,
+        GraphNeuralNetworksConfigs,
+        MolecularGraphConfigs,
+    )
+from fairchem.core.models.escaip.custom_types import GraphAttentionData
+from fairchem.core.models.escaip.utils.graph_utils import (
+    get_attn_mask,
+    get_attn_mask_env,
+    get_compact_frequency_vectors,
+    get_node_direction_expansion_neighbor,
+    pad_batch,
+)
+from fairchem.core.models.escaip.utils.radius_graph import (
+    biknn_radius_graph,
+    envelope_fn,
+    safe_norm,
+    safe_normalize,
+)
+from fairchem.core.models.escaip.utils.smearing import (
     GaussianSmearing,
     LinearSigmoidSmearing,
     SigmoidSmearing,
     SiLUSmearing,
 )
 
-from ..custom_types import GraphAttentionData
-from ..configs import (
-    GlobalConfigs,
-    MolecularGraphConfigs,
-    GraphNeuralNetworksConfigs,
-)
-from .graph_utils import (
-    get_node_direction_expansion,
-    convert_neighbor_list,
-    map_neighbor_list,
-    get_attn_mask,
-    patch_singleton_atom,
-    pad_batch,
-)
 
-
-def data_preprocess(
-    data,
-    generate_graph_fn: callable,
+def data_preprocess_radius_graph(
+    data: AtomicData,
+    # generate_graph_fn: callable,
     global_cfg: GlobalConfigs,
     gnn_cfg: GraphNeuralNetworksConfigs,
     molecular_graph_cfg: MolecularGraphConfigs,
@@ -52,44 +60,47 @@ def data_preprocess(
     ).to(data.pos.device)
 
     # generate graph
-    graph = generate_graph_fn(data)
-
-    # sort edge index according to receiver node
-    edge_index, edge_attr = torch_geometric.utils.sort_edge_index(
-        graph.edge_index,
-        [graph.edge_distance, graph.edge_distance_vec],
-        sort_by_row=False,
+    (
+        disp,  # (num_nodes, num_neighbors, 3)
+        src_env,
+        _,
+        _,
+        _,
+        neighbor_index,  # (2, num_nodes, num_neighbors)
+    ) = biknn_radius_graph(  # type: ignore
+        data,
+        molecular_graph_cfg.max_radius,  # type: ignore[arg-type]
+        molecular_graph_cfg.knn_k,
+        molecular_graph_cfg.knn_soft,
+        molecular_graph_cfg.knn_sigmoid_scale,
+        molecular_graph_cfg.knn_lse_scale,
+        molecular_graph_cfg.knn_use_low_mem,
+        molecular_graph_cfg.knn_pad_size,
+        molecular_graph_cfg.use_pbc,
+        data.pos.device,
     )
-    edge_distance, edge_distance_vec = edge_attr[0], edge_attr[1]
 
-    # edge directions (for direct force prediction, ref: gemnet)
-    edge_direction = -edge_distance_vec / edge_distance[:, None]
+    num_nodes, num_neighbors, _ = disp.shape
+    edge_direction = safe_normalize(disp)  # (num_nodes, num_neighbors, 3)
+    edge_distance = safe_norm(disp)  # (num_nodes, num_neighbors)
+    neighbor_mask = src_env != torch.inf  # (num_nodes, num_neighbors)
+    src_mask = envelope_fn(src_env, molecular_graph_cfg.use_envelope)
 
     # edge distance expansion (ref: scn)
-    edge_distance_expansion = edge_distance_expansion_func(edge_distance)
+    # (num_nodes, num_neighbors, edge_distance_expansion_size)
+    edge_distance_expansion = edge_distance_expansion_func(edge_distance.flatten())
+    edge_distance_expansion = edge_distance_expansion.view(
+        num_nodes, num_neighbors, gnn_cfg.edge_distance_expansion_size
+    )
 
-    # node direction expansion
-    node_direction_expansion = get_node_direction_expansion(
-        distance_vec=edge_distance_vec,
-        edge_index=edge_index,
+    # node direction expansion (num_nodes, num_neighbors, lmax + 1)
+    node_direction_expansion = get_node_direction_expansion_neighbor(
+        direction_vec=edge_direction,
+        neighbor_mask=neighbor_mask,
         lmax=gnn_cfg.node_direction_expansion_size - 1,
-        num_nodes=data.num_nodes,
     )
 
-    # convert to neighbor list
-    neighbor_list, neighbor_mask, index_mapping = convert_neighbor_list(
-        edge_index, molecular_graph_cfg.max_neighbors, data.num_nodes
-    )
-
-    # map neighbor list
-    map_neighbor_list_ = partial(
-        map_neighbor_list,
-        index_mapping=index_mapping,
-        max_neighbors=molecular_graph_cfg.max_neighbors,
-        num_nodes=data.num_nodes,
-    )
-    edge_direction = map_neighbor_list_(edge_direction)
-    edge_distance_expansion = map_neighbor_list_(edge_distance_expansion)
+    neighbor_list = neighbor_index[1]
 
     # pad batch
     if global_cfg.use_padding:
@@ -100,20 +111,22 @@ def data_preprocess(
             edge_direction,
             neighbor_list,
             neighbor_mask,
+            src_mask,
             node_batch,
             node_padding_mask,
             graph_padding_mask,
         ) = pad_batch(
-            max_num_nodes_per_batch=molecular_graph_cfg.max_num_nodes_per_batch,
+            max_atoms=molecular_graph_cfg.max_atoms,
+            max_batch_size=molecular_graph_cfg.max_batch_size,
             atomic_numbers=atomic_numbers,
             node_direction_expansion=node_direction_expansion,
             edge_distance_expansion=edge_distance_expansion,
             edge_direction=edge_direction,
             neighbor_list=neighbor_list,
             neighbor_mask=neighbor_mask,
+            src_mask=src_mask,
             node_batch=data.batch,
             num_graphs=data.num_graphs,
-            batch_size=global_cfg.batch_size,
         )
     else:
         node_padding_mask = torch.ones_like(atomic_numbers, dtype=torch.bool)
@@ -122,25 +135,65 @@ def data_preprocess(
         )
         node_batch = data.batch
 
-    # patch singleton atom
-    edge_direction, neighbor_list, neighbor_mask = patch_singleton_atom(
-        edge_direction, neighbor_list, neighbor_mask
-    )
+    # patch singleton atom (TODO: check if this is needed)
+    # if global_cfg.use_padding:
+    #     edge_direction, neighbor_list, neighbor_mask = patch_singleton_atom(
+    #         edge_direction, neighbor_list, neighbor_mask
+    #     )
 
     # get attention mask
-    attn_mask, angle_embedding = get_attn_mask(
-        edge_direction=edge_direction,
-        neighbor_mask=neighbor_mask,
-        num_heads=gnn_cfg.atten_num_heads,
-        use_angle_embedding=gnn_cfg.use_angle_embedding,
-    )
+    attn_mask = get_attn_mask_env(src_mask, gnn_cfg.atten_num_heads)  # type: ignore
+    if gnn_cfg.use_angle_embedding == "none":
+        angle_embedding = None
+    else:
+        attn_mask, angle_embedding = get_attn_mask(
+            edge_direction=edge_direction,
+            neighbor_mask=neighbor_mask,
+            num_heads=gnn_cfg.atten_num_heads,
+            lmax=gnn_cfg.node_direction_expansion_size,
+            use_angle_embedding=gnn_cfg.use_angle_embedding,
+        )
+
+    # get frequency vectors
+    if gnn_cfg.use_frequency_embedding:
+        # Create repeating dimensions tensor for assertion checks
+        repeating_dimensions = torch.tensor(
+            gnn_cfg.freequency_list, dtype=torch.long, device=data.pos.device
+        )
+
+        # Add assertions to validate repeating_dimensions
+        # Check that values sum to head_dim
+        head_dim = global_cfg.hidden_size // gnn_cfg.atten_num_heads
+        sum_repeats = torch.sum(repeating_dimensions).item()
+        assert sum_repeats == head_dim, (
+            f"Sum of freequency_list must equal head_dim ({head_dim}), "
+            f"but got sum={sum_repeats}. Please adjust freequency_list."
+        )
+
+        # Use the Python list directly for better torch.compile compatibility
+        frequency_vectors = get_compact_frequency_vectors(
+            edge_direction=edge_direction,
+            lmax=len(gnn_cfg.freequency_list) - 1,
+            repeating_dimensions=gnn_cfg.freequency_list,  # Pass list instead of tensor
+        )
+    else:
+        frequency_vectors = None
 
     if gnn_cfg.atten_name in ["memory_efficient", "flash", "math"]:
+        if (
+            gnn_cfg.atten_name in ["memory_efficient", "flash"]
+            and not global_cfg.direct_forces
+        ):
+            logging.warning(
+                "Fallback to math attention for gradient based force prediction"
+            )
+            gnn_cfg.atten_name = "math"
         torch.backends.cuda.enable_flash_sdp(gnn_cfg.atten_name == "flash")
         torch.backends.cuda.enable_mem_efficient_sdp(
             gnn_cfg.atten_name == "memory_efficient"
         )
-        torch.backends.cuda.enable_math_sdp(gnn_cfg.atten_name == "math")
+        # enable math attention for fallbacks
+        torch.backends.cuda.enable_math_sdp(True)
     else:
         raise NotImplementedError(
             f"Attention name {gnn_cfg.atten_name} not implemented"
@@ -154,6 +207,7 @@ def data_preprocess(
         edge_direction=edge_direction,
         attn_mask=attn_mask,
         angle_embedding=angle_embedding,
+        frequency_vectors=frequency_vectors,
         neighbor_list=neighbor_list,
         neighbor_mask=neighbor_mask,
         node_batch=node_batch,
