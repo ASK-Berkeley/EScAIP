@@ -1,14 +1,22 @@
-from typing import Literal
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal
 
 import torch
 import torch.nn as nn
 
-from ..utils.nn_utils import get_linear, get_feedforward, get_normalization_layer
-
-from ..configs import (
-    GlobalConfigs,
-    GraphNeuralNetworksConfigs,
-    RegularizationConfigs,
+if TYPE_CHECKING:
+    from fairchem.core.models.escaip.configs import (
+        GlobalConfigs,
+        GraphNeuralNetworksConfigs,
+        RegularizationConfigs,
+    )
+from fairchem.core.models.escaip.utils.nn_utils import (
+    Activation,
+    NormalizationType,
+    get_feedforward,
+    get_linear,
+    get_normalization_layer,
 )
 
 
@@ -20,32 +28,58 @@ class OutputProjection(nn.Module):
         reg_cfg: RegularizationConfigs,
     ):
         super().__init__()
+        self.use_edge_readout = global_cfg.regress_forces and global_cfg.direct_forces
+        self.use_global_readout = gnn_cfg.use_global_readout
+
         # map concatenated readout features to hidden size
         self.node_projection = get_linear(
-            in_features=global_cfg.hidden_size * (gnn_cfg.num_layers + 1),
+            in_features=global_cfg.hidden_size * (global_cfg.num_layers + 1),
             out_features=global_cfg.hidden_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             bias=True,
         )
-        self.edge_projection = get_linear(
-            in_features=global_cfg.hidden_size * (gnn_cfg.num_layers + 1),
-            out_features=global_cfg.hidden_size,
-            activation=global_cfg.activation,
-            bias=True,
-        )
-        self.readout_norm = get_normalization_layer(
-            reg_cfg.normalization, is_graph=True
-        )(global_cfg.hidden_size * (gnn_cfg.num_layers + 1))
-        self.output_norm = get_normalization_layer(
-            reg_cfg.normalization, is_graph=True
+        self.output_norm_node = get_normalization_layer(
+            NormalizationType(reg_cfg.normalization)
         )(global_cfg.hidden_size)
 
-    def forward(self, node_readouts, edge_readouts):
-        node_readouts, edge_readouts = self.readout_norm(node_readouts, edge_readouts)
+        if self.use_edge_readout:
+            self.edge_projection = get_linear(
+                in_features=global_cfg.hidden_size * (global_cfg.num_layers + 1),
+                out_features=global_cfg.hidden_size,
+                activation=Activation(global_cfg.activation),
+                bias=True,
+            )
+            self.output_norm_edge = get_normalization_layer(
+                NormalizationType(reg_cfg.normalization)
+            )(global_cfg.hidden_size)
+
+        if self.use_global_readout:
+            self.global_projection = get_linear(
+                in_features=global_cfg.hidden_size * (global_cfg.num_layers + 1),
+                out_features=global_cfg.hidden_size,
+                activation=Activation(global_cfg.activation),
+                bias=True,
+            )
+            self.output_norm_global = get_normalization_layer(
+                NormalizationType(reg_cfg.normalization)
+            )(global_cfg.hidden_size)
+
+    def forward(self, data, global_readouts, node_readouts, edge_readouts):
         node_features = self.node_projection(node_readouts)
-        edge_features = self.edge_projection(edge_readouts)
-        node_features, edge_features = self.output_norm(node_features, edge_features)
-        return node_features, edge_features
+        node_features = self.output_norm_node(node_features)
+
+        if self.use_global_readout:
+            global_features = self.global_projection(global_readouts)
+            global_features = self.output_norm_global(global_features)
+        else:
+            global_features = None
+
+        if self.use_edge_readout:
+            edge_features = self.edge_projection(edge_readouts)
+            edge_features = self.output_norm_edge(edge_features)
+        else:
+            edge_features = None
+        return global_features, node_features, edge_features
 
 
 class OutputLayer(nn.Module):
@@ -67,21 +101,21 @@ class OutputLayer(nn.Module):
             "Vector": 3,
             "Scalar": 1,
         }
-        assert (
-            output_type in output_type_dict.keys()
-        ), f"Invalid output type {output_type}"
+        assert output_type in output_type_dict, f"Invalid output type {output_type}"
 
         # mlp
         self.ffn = get_feedforward(
             hidden_dim=global_cfg.hidden_size,
-            activation=global_cfg.activation,
+            activation=Activation(global_cfg.activation),
             hidden_layer_multiplier=gnn_cfg.output_hidden_layer_multiplier,
-            dropout=reg_cfg.mlp_dropout,
+            dropout=reg_cfg.scalar_output_dropout
+            if output_type == "Scalar"
+            else reg_cfg.vector_output_dropout,
             bias=True,
         )
 
         # normalization
-        # self.norm = get_normalization_layer(reg_cfg.normalization, is_graph=False)(
+        # self.norm = get_normalization_layer(reg_cfg.normalization)(
         #     global_cfg.hidden_size
         # )
 
@@ -98,7 +132,7 @@ class OutputLayer(nn.Module):
         Shape ([num_nodes, hidden_size] or [num_nodes, max_neighbor, hidden_size])
         """
         # mlp
-        features = features + self.ffn(features)
+        features = self.ffn(features)
 
         # final output layer
         return self.final_output(features)

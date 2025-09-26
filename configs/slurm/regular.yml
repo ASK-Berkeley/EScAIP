@@ -1,6 +1,0 @@
-includes:
-  - configs/slurm/base.yml
-
-slurm:
-  qos: regular
-  time: "24:00:00"

@@ -1,5 +1,7 @@
 # EScAIP: Efficiently Scaled Attention Interatomic Potential
 
+## Note: EScAIP is now integrated into the [FairChem](https://github.com/FAIR-Chem/fairchem) repository. This repository contains checkpoints and usage examples, but is no longer maintained.
+
 This repository contains the official implementation of the [Efficiently Scaled Attention Interatomic Potential (NeurIPS 2024)](https://openreview.net/forum?id=Y4mBaZu4vy).
 
 > Scaling has been a critical factor in improving model performance and generalization across various fields of machine learning.
@@ -9,108 +11,37 @@ EScAIP leverages a novel multi-head self-attention formulation within graph neur
 Implemented with highly-optimized attention GPU kernels, EScAIP achieves substantial gains in efficiency---at least 10x speed up in inference time, 5x less in memory usage---compared to existing NNIP models. EScAIP also achieves state-of-the-art performance on a wide range of datasets including catalysts (OC20 and OC22), molecules (SPICE), and materials (MPTrj).
 We emphasize that our approach should be thought of as a philosophy rather than a specific model, representing a proof-of-concept towards developing general-purpose NNIPs that achieve better expressivity through scaling, and continue to scale efficiently with increased computational resources and training data.
 
-**Feb 2024 update**: We recently discovered that our model relies on a specific older version of the Triton attention kernel for optimal performance, which was recently changed: using newer versions leads to degraded results, especially on the OC20 dataset. We are actively working on tuning the model to be compatible with the latest kernel (see branch kernel_update). We will provide updates on this, and please feel free to reach out if you would like further updates on timelines. If you encounter any issues or you have questions about tuning the model on your datasets of interest, please feel free to open an issue or reach out.
-
 ## Install
 
-Step 1: Install mamba solver for conda (optional)
-
-```bash
-conda install mamba -n base -c conda-forge
-```
-
-Step 2: Install the FAIRChem dependencies
-
-```bash
-wget https://raw.githubusercontent.com/FAIR-Chem/fairchem/main/packages/env.gpu.yml
-mamba env create -f env.gpu.yml
-conda activate fair-chem
-```
-
-Step 3: Install FairChem core package
-
-```bash
-git submodule update --init --recursive
-pip install -e fairchem/packages/fairchem-core
-```
-
-Step 4: Install the pre-commit (if you want to contribute)
-
-```bash
-pre-commit install
-```
+Install FairChem (see [FairChem documentation](https://fair-chem.github.io/core/install.html)). The model is now contained in the package.
 
 ## Train
 
-Use `main.py` to train the models. Th usage is similar to FairChem (refer to the [FairChem documentation](https://fair-chem.github.io/core/model_training.html) for more details):
+Now training is done through FairChem CLI. For example, to train a model on the OC20 dataset:
 
-Single GPU training:
+1. Change the user-dependent configs in the FairChem repo, including:
+- `configs/escaip/training/cluster/your_cluster.yml`: cluster configuration, including rundir.
+- `configs/escaip/training/dataset/your_oc20_dataset.yml`: data path on your machine.
+- `configs/escaip/training/oc20_direct_escaip_fair.yml`: the wandb project name and entity.
 
+2. Run the training command:
 ```bash
-python main.py --mode train --config-yml {CONFIG} --run-dir {RUNDIR} --timestamp-id {TIMESTAMP} --checkpoint {CHECKPOINT}
+fairchem -c configs/escaip/training/oc20_direct_escaip_fair.yml
 ```
-
-Use `start_exp.py` to start a run in the background:
-
-```bash
-python start_exp.py --config-yml {CONFIG} --cvd {GPU NUM} --run-dir {RUNDIR} --timestamp-id {TIMESTAMP} --checkpoint {CHECKPOINT}
-```
-
-Multi-GPU training (same device):
-
-```bash
-torchrun --standalone --nproc_per_node={N} main.py --distributed --num-gpus {N} {...}
-```
-
-For distributed training on NERSC, refer to the [NERSC distributed training with submitit](NERSC_dist_train.md).
 
 ## Simulation
 
-Use `simulate.py` to simulate the models. It requires to install the MDSim package:
-
-```bash
-pip install -e MDsim
-```
-
-A separate config file is needed for the simulation. Some example configs can be found in `configs/s2ef/MD22/datasets/{DATASET}/simulation.yml`.
-
-```bash
-python simulate.py --simulation_config_yml {SIMULATION CONFIG} --model_dir {CHECKPOINT DIR} --model_config_yml {MODEL CONFIG}--identifier {IDENTIFIER}
-```
-
-### Example Usage
-
-For example, to simulate on MD22 DHA split:
-
-```bash
-python simulate.py --simulation_config_yml configs/s2ef/MD22/datasets/DHA/simulation.yml --model_dir checkpoints/MD22_DHA/ --model_config_yml configs/s2ef/MD22/EScAIP/DHA.yml --identifier test_simulation
-```
-
-After the simulation, the results can be found in the checkpoint directory under the `identifier` folder. Use `scripts/analyze_rollouts_md17_22.py` to analyze the results:
-
-```bash
-PYTHONPATH=./ python scripts/analyze_rollouts_md17_22.py --md_dir checkpoints/MD22_DHA/md_sim_test_simulation --gt_traj /data/md22/md22_AT-AT.npz --xlim 25
-```
-
-Refer to the [MDSim repo](https://github.com/kyonofx/MDsim) for more details.
-
+Use FairChem Calculator to simulate with the models. See the [FairChem documentation](https://fair-chem.github.io/core/quickstart.html) for more details.
 
 ## Model Architecture
 
-Refer to the [model architecture](model_architecture.md) for more details. A detailed description of model configurations can be found [here](configs/example_config_EScAIP.yml).
+Refer to the [model architecture](model_architecture.md) for more details.
 
-Some notes on the configs:
-- The model uses `torch.compile` to compile the model for better performance. [But it's not supporting second order gradient.](https://github.com/pytorch/pytorch/issues/91469) So to use gradient energy, it has to be disabled.
-    - The implicit batch needs to be padded to use `torch.compile`. The size is controlled by `max_num_nodes_per_batch`.
-- The attention kernels are selected by `atten_name`, which has 4 options:
-    - `math`: the default attention by pytorch, supports all datatypes and second order gradient.
-    - `memory_efficient`: the memory efficient kernel by pytorch, supports fp32 and fp16, but no second order gradient.
-    - `flash`: the flash attention kernel by pytorch, supports only fp16, no second order gradient.
-- The `use_fp16_backbone` will turn the graph attention backbone to fp16, and the output head will still be fp32. For now, we're opting to use AutoMixedPrecision instead, as it's more stable.
+Note: we have seen some performance difference when using different versions of attention kernels. This issue is fixed now. Please refer to the Appendix C of the [updated paper](https://arxiv.org/abs/2410.24169) for more details.
 
 ## Pretrained Models
 
-We will release the pretrained models in the paper soon (after the model transition is fanalized).
+We will release the pretrained models in the paper here.
 
 ## Citation
 

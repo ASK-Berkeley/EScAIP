@@ -1,4 +1,0 @@
-includes:
-  - configs/s2ef/MD22/datasets/simulation_base.yml
-
-dataset_src: /data/shared/MLFF/MD22/95_lmdb/AT-AT-CG-CG/val/

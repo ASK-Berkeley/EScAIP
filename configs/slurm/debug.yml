@@ -1,6 +1,0 @@
-includes:
-  - configs/slurm/base.yml
-
-slurm:
-  qos: debug
-  time: 00:10:00
